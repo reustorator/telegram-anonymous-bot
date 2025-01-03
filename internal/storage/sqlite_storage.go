@@ -3,7 +3,6 @@ package storage
 import (
 	"database/sql"
 	"fmt"
-	_ "log"
 
 	_ "github.com/mattn/go-sqlite3"
 	"telegram-anonymous-bot/internal/models"
@@ -19,13 +18,16 @@ func NewSQLiteStorage(databaseURL string) (*SQLiteStorage, error) {
 		return nil, err
 	}
 
-	createTable := `CREATE TABLE IF NOT EXISTS questions (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER,
-        text TEXT,
-        answered BOOLEAN DEFAULT FALSE,
-        answer TEXT
-    );`
+	createTable := `
+        CREATE TABLE IF NOT EXISTS questions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+			username STRING NOT NULL,
+            text TEXT NOT NULL,
+            answered INTEGER DEFAULT 0, -- 0 = false, 1 = true
+            answer TEXT
+        );
+    `
 	_, err = db.Exec(createTable)
 	if err != nil {
 		return nil, err
@@ -35,13 +37,13 @@ func NewSQLiteStorage(databaseURL string) (*SQLiteStorage, error) {
 }
 
 func (s *SQLiteStorage) SaveQuestion(question *models.Question) error {
-	stmt, err := s.db.Prepare("INSERT INTO questions(user_id, text) VALUES(?, ?)")
+	stmt, err := s.db.Prepare("INSERT INTO questions (user_id, username, text) VALUES (?, ?, ?)")
 	if err != nil {
 		return err
 	}
 	defer stmt.Close()
 
-	res, err := stmt.Exec(question.UserID, question.Text)
+	res, err := stmt.Exec(question.UserID, question.Username, question.Text)
 	if err != nil {
 		return err
 	}
@@ -56,13 +58,24 @@ func (s *SQLiteStorage) SaveQuestion(question *models.Question) error {
 }
 
 func (s *SQLiteStorage) GetQuestion(id int) (*models.Question, error) {
-	row := s.db.QueryRow("SELECT id, user_id, text, answered, answer FROM questions WHERE id = ?", id)
+	row := s.db.QueryRow("SELECT id, user_id, username, text, answered, answer FROM questions WHERE id = ?", id)
 	question := &models.Question{}
 	var answeredInt int
-	if err := row.Scan(&question.ID, &question.UserID, &question.Text, &answeredInt, &question.Answer); err != nil {
+	var answer sql.NullString
+
+	if err := row.Scan(&question.ID, &question.UserID, &question.Username, &question.Text, &answeredInt, &answer); err != nil {
 		return nil, err
 	}
+	// Преобразуем 0/1 в bool
 	question.Answered = answeredInt != 0
+
+	// Обработка NULL для answer
+	if answer.Valid {
+		question.Answer = answer.String
+	} else {
+		question.Answer = ""
+	}
+
 	return question, nil
 }
 
@@ -85,6 +98,50 @@ func (s *SQLiteStorage) UpdateQuestion(question *models.Question) error {
 	}
 	defer stmt.Close()
 
-	_, err = stmt.Exec(question.Answered, question.Answer, question.ID)
+	// Сохраняем 0 или 1 для поля answered
+	answeredVal := 0
+	if question.Answered {
+		answeredVal = 1
+	}
+
+	_, err = stmt.Exec(answeredVal, question.Answer, question.ID)
 	return err
+}
+
+func (s *SQLiteStorage) GetAllQuestions() ([]*models.Question, error) {
+	rows, err := s.db.Query("SELECT id, user_id, username, text, answered, answer FROM questions")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var questions []*models.Question
+	for rows.Next() {
+		question := &models.Question{}
+		var answeredInt int
+		var answer sql.NullString
+
+		if err := rows.Scan(&question.ID, &question.UserID, &question.Username, &question.Text, &answeredInt, &answer); err != nil {
+			return nil, err
+		}
+
+		// Преобразуем 0/1 в bool
+		question.Answered = answeredInt != 0
+
+		// Обработка NULL для answer
+		if answer.Valid {
+			question.Answer = answer.String
+		} else {
+			question.Answer = ""
+		}
+
+		questions = append(questions, question)
+	}
+
+	// Проверяем ошибки, возникшие во время итерации
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return questions, nil
 }

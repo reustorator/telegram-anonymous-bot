@@ -1,119 +1,172 @@
 package bot
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 
+	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api"
 	"telegram-anonymous-bot/internal/models"
 	"telegram-anonymous-bot/pkg/logger"
-
-	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api"
 )
 
+// handleMessage обрабатывает обычное сообщение (вопрос).
 func (t *TelegramBot) handleMessage(message *tgbotapi.Message) {
-	question := message.Text
+	// Извлекаем текст вопроса, username и userID
+	questionText := message.Text
+	username := message.From.UserName // Может быть пустым, если пользователь не задал username
 	userID := message.From.ID
 
+	// Создаём структуру вопроса
 	q := &models.Question{
-		UserID: userID,
-		Text:   question,
+		UserID:   userID,
+		Username: username,
+		Text:     questionText,
 	}
 
 	if err := t.storage.SaveQuestion(q); err != nil {
 		logger.ErrorLogger.Println("Error saving question:", err)
-		msg := tgbotapi.NewMessage(message.Chat.ID, "Произошла ошибка при сохранении вашего вопроса.")
-		t.bot.Send(msg)
+		t.sendErrorToUser(message.Chat.ID, "Произошла ошибка при сохранении вашего вопроса.")
 		return
 	}
 
 	lastID, err := t.storage.GetLastQuestionID()
 	if err != nil {
 		logger.ErrorLogger.Println("Error getting last question ID:", err)
-		msg := tgbotapi.NewMessage(message.Chat.ID, "Произошла ошибка при обработке вашего вопроса.")
-		t.bot.Send(msg)
+		t.sendErrorToUser(message.Chat.ID, "Произошла ошибка при обработке вашего вопроса.")
 		return
 	}
 
 	// Отправляем вопрос администратору
-	adminMsg := tgbotapi.NewMessage(int64(t.config.AdminID),
-		"Новый анонимный вопрос:\n"+question+"\nID вопроса: "+strconv.Itoa(lastID))
-	t.bot.Send(adminMsg)
+	adminText := fmt.Sprintf(
+		"Новый анонимный вопрос:\n%s\nID вопроса: %d\n(from: @%s / %d)",
+		questionText, lastID, username, userID,
+	)
+	if err := t.sendMessage(int64(t.config.AdminID), adminText); err != nil {
+		logger.ErrorLogger.Println("Error sending message to admin:", err)
+	}
 
 	// Подтверждение пользователю
-	userMsg := tgbotapi.NewMessage(message.Chat.ID, "Ваш вопрос отправлен. Спасибо!")
-	t.bot.Send(userMsg)
+	if err := t.sendMessage(message.Chat.ID, "Ваш вопрос отправлен. Спасибо!"); err != nil {
+		logger.ErrorLogger.Println("Error sending confirmation to user:", err)
+	}
 }
 
+// handleCommand обрабатывает команды: /start, /answer, /list и т.д.
 func (t *TelegramBot) handleCommand(message *tgbotapi.Message) {
 	switch message.Command() {
 	case "start":
 		t.handleStartCommand(message)
 	case "answer":
 		t.handleAnswerCommand(message)
+	case "list":
+		t.handleListCommand(message)
 	default:
-		msg := tgbotapi.NewMessage(message.Chat.ID, "Неизвестная команда.")
-		t.bot.Send(msg)
+		_ = t.sendMessage(message.Chat.ID, "Неизвестная команда.")
 	}
 }
 
+// handleStartCommand отправляет приветственное сообщение пользователю.
 func (t *TelegramBot) handleStartCommand(message *tgbotapi.Message) {
 	welcomeMsg := "Привет! Задайте свой вопрос, и он будет отправлен анонимно."
-	msg := tgbotapi.NewMessage(message.Chat.ID, welcomeMsg)
-	t.bot.Send(msg)
+	if err := t.sendMessage(message.Chat.ID, welcomeMsg); err != nil {
+		logger.ErrorLogger.Println("Error sending start message:", err)
+	}
 }
 
+// handleAnswerCommand обрабатывает команду /answer <questionID> <answer> и отвечает на вопрос.
 func (t *TelegramBot) handleAnswerCommand(message *tgbotapi.Message) {
+	// Проверяем, что это администратор
 	if message.From.ID != t.config.AdminID {
-		msg := tgbotapi.NewMessage(message.Chat.ID, "У вас нет доступа к этой команде.")
-		t.bot.Send(msg)
+		t.sendErrorToUser(message.Chat.ID, "У вас нет доступа к этой команде.")
 		return
 	}
 
-	// Ожидаемый формат: /answer <id_вопроса> <ответ>
+	// Парсим аргументы команды
 	args := strings.SplitN(message.Text, " ", 3)
 	if len(args) < 3 {
-		msg := tgbotapi.NewMessage(message.Chat.ID, "Использование: /answer <id_вопроса> <ответ>")
-		t.bot.Send(msg)
+		t.sendErrorToUser(message.Chat.ID, "Использование: /answer <id_вопроса> <ответ>")
 		return
 	}
 
 	questionID, err := strconv.Atoi(args[1])
 	if err != nil {
-		msg := tgbotapi.NewMessage(message.Chat.ID, "Неверный ID вопроса.")
-		t.bot.Send(msg)
+		t.sendErrorToUser(message.Chat.ID, "Неверный ID вопроса.")
 		return
 	}
 
-	answer := args[2]
+	answerText := args[2]
 
 	question, err := t.storage.GetQuestion(questionID)
 	if err != nil {
-		msg := tgbotapi.NewMessage(message.Chat.ID, "Вопрос не найден.")
-		t.bot.Send(msg)
+		t.sendErrorToUser(message.Chat.ID, "Вопрос не найден или произошла ошибка: "+err.Error())
 		return
 	}
 
 	if question.Answered {
-		msg := tgbotapi.NewMessage(message.Chat.ID, "На этот вопрос уже был дан ответ.")
-		t.bot.Send(msg)
+		t.sendErrorToUser(message.Chat.ID, "На этот вопрос уже был дан ответ.")
 		return
 	}
 
 	// Отправляем ответ пользователю
-	respMsg := tgbotapi.NewMessage(int64(question.UserID), "Ответ на ваш вопрос:\n"+answer)
-	t.bot.Send(respMsg)
+	responseText := fmt.Sprintf("Ответ на ваш вопрос:\n%s", answerText)
+	if err := t.sendMessage(int64(question.UserID), responseText); err != nil {
+		logger.ErrorLogger.Println("Error sending answer to user:", err)
+	}
 
 	// Обновляем статус вопроса
 	question.Answered = true
-	question.Answer = answer
+	question.Answer = answerText
 	if err := t.storage.UpdateQuestion(question); err != nil {
 		logger.ErrorLogger.Println("Error updating question:", err)
-		msg := tgbotapi.NewMessage(message.Chat.ID, "Произошла ошибка при обновлении вопроса.")
-		t.bot.Send(msg)
+		t.sendErrorToUser(message.Chat.ID, "Произошла ошибка при обновлении вопроса.")
 		return
 	}
 
-	// Подтверждение администратору
-	confirmMsg := tgbotapi.NewMessage(message.Chat.ID, "Ответ отправлен.")
-	t.bot.Send(confirmMsg)
+	// Подтверждаем администратору
+	_ = t.sendMessage(message.Chat.ID, "Ответ отправлен.")
+}
+
+// handleListCommand обрабатывает команду /list и выводит список всех вопросов.
+func (t *TelegramBot) handleListCommand(message *tgbotapi.Message) {
+	if message.From.ID != t.config.AdminID {
+		t.sendErrorToUser(message.Chat.ID, "У вас нет доступа к этой команде.")
+		return
+	}
+
+	questions, err := t.storage.GetAllQuestions()
+	if err != nil {
+		t.sendErrorToUser(message.Chat.ID, "Ошибка при получении списка вопросов: "+err.Error())
+		return
+	}
+	if len(questions) == 0 {
+		t.sendMessage(message.Chat.ID, "Вопросы отсутствуют.")
+		return
+	}
+
+	var idsList strings.Builder
+	for _, q := range questions {
+		idsList.WriteString(fmt.Sprintf(
+			"ID: %d, Пользователь: %s, Текст: %s, Ответ: %t\n",
+			q.ID, q.Username, q.Text, q.Answered,
+		))
+	}
+
+	if err := t.sendMessage(message.Chat.ID, "Список вопросов:\n"+idsList.String()); err != nil {
+		logger.ErrorLogger.Println("Error sending question list:", err)
+	}
+}
+
+// sendMessage отправляет сообщение пользователю (чату).
+func (t *TelegramBot) sendMessage(chatID int64, text string) error {
+	msg := tgbotapi.NewMessage(chatID, text)
+	_, err := t.bot.Send(msg)
+	return err
+}
+
+// sendErrorToUser упрощает отправку сообщения об ошибке пользователю.
+func (t *TelegramBot) sendErrorToUser(chatID int64, text string) {
+	if err := t.sendMessage(chatID, text); err != nil {
+		logger.ErrorLogger.Printf("Failed to send error message to user %d: %v", chatID, err)
+	}
 }
