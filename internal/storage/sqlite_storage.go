@@ -1,3 +1,5 @@
+// internal/storage/sqlite_storage.go
+
 package storage
 
 import (
@@ -19,31 +21,36 @@ func NewSQLiteStorage(databaseURL string) (*SQLiteStorage, error) {
 	}
 
 	createTable := `
-        CREATE TABLE IF NOT EXISTS questions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-			username STRING NOT NULL,
-            text TEXT NOT NULL,
-            answered INTEGER DEFAULT 0, -- 0 = false, 1 = true
-            answer TEXT
-        );
-    `
-	_, err = db.Exec(createTable)
-	if err != nil {
+CREATE TABLE IF NOT EXISTS questions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    username TEXT NOT NULL,
+    text TEXT NOT NULL,
+    file_id TEXT,
+    media_type TEXT,
+    answered INTEGER DEFAULT 0, -- 0 = false, 1 = true
+    answer TEXT
+);
+`
+	if _, err = db.Exec(createTable); err != nil {
 		return nil, err
 	}
 
 	return &SQLiteStorage{db: db}, nil
 }
 
-func (s *SQLiteStorage) SaveQuestion(question *models.Question) error {
-	stmt, err := s.db.Prepare("INSERT INTO questions (user_id, username, text) VALUES (?, ?, ?)")
+func (s *SQLiteStorage) SaveQuestion(q *models.Question) error {
+	query := `
+INSERT INTO questions (user_id, username, text, file_id, media_type)
+VALUES (?, ?, ?, ?, ?)
+`
+	stmt, err := s.db.Prepare(query)
 	if err != nil {
 		return err
 	}
 	defer stmt.Close()
 
-	res, err := stmt.Exec(question.UserID, question.Username, question.Text)
+	res, err := stmt.Exec(q.UserID, q.Username, q.Text, q.FileID, q.MediaType)
 	if err != nil {
 		return err
 	}
@@ -52,31 +59,51 @@ func (s *SQLiteStorage) SaveQuestion(question *models.Question) error {
 	if err != nil {
 		return err
 	}
-
-	question.ID = int(id)
+	q.ID = int(id)
 	return nil
 }
 
 func (s *SQLiteStorage) GetQuestion(id int) (*models.Question, error) {
-	row := s.db.QueryRow("SELECT id, user_id, username, text, answered, answer FROM questions WHERE id = ?", id)
-	question := &models.Question{}
+	row := s.db.QueryRow(`
+SELECT id, user_id, username, text, file_id, media_type, answered, answer
+FROM questions
+WHERE id = ?
+`, id)
+
+	q := &models.Question{}
 	var answeredInt int
 	var answer sql.NullString
+	var fileID sql.NullString
+	var mediaType sql.NullString
 
-	if err := row.Scan(&question.ID, &question.UserID, &question.Username, &question.Text, &answeredInt, &answer); err != nil {
+	if err := row.Scan(
+		&q.ID,
+		&q.UserID,
+		&q.Username,
+		&q.Text,
+		&fileID,
+		&mediaType,
+		&answeredInt,
+		&answer,
+	); err != nil {
 		return nil, err
 	}
-	// Преобразуем 0/1 в bool
-	question.Answered = answeredInt != 0
 
-	// Обработка NULL для answer
+	if fileID.Valid {
+		q.FileID = fileID.String
+	}
+	if mediaType.Valid {
+		q.MediaType = mediaType.String
+	}
+	q.Answered = answeredInt != 0
+
 	if answer.Valid {
-		question.Answer = answer.String
+		q.Answer = answer.String
 	} else {
-		question.Answer = ""
+		q.Answer = ""
 	}
 
-	return question, nil
+	return q, nil
 }
 
 func (s *SQLiteStorage) GetLastQuestionID() (int, error) {
@@ -91,25 +118,31 @@ func (s *SQLiteStorage) GetLastQuestionID() (int, error) {
 	return 0, fmt.Errorf("no questions found")
 }
 
-func (s *SQLiteStorage) UpdateQuestion(question *models.Question) error {
-	stmt, err := s.db.Prepare("UPDATE questions SET answered = ?, answer = ? WHERE id = ?")
+func (s *SQLiteStorage) UpdateQuestion(q *models.Question) error {
+	stmt, err := s.db.Prepare(`
+UPDATE questions
+SET answered = ?, answer = ?
+WHERE id = ?
+`)
 	if err != nil {
 		return err
 	}
 	defer stmt.Close()
 
-	// Сохраняем 0 или 1 для поля answered
 	answeredVal := 0
-	if question.Answered {
+	if q.Answered {
 		answeredVal = 1
 	}
 
-	_, err = stmt.Exec(answeredVal, question.Answer, question.ID)
+	_, err = stmt.Exec(answeredVal, q.Answer, q.ID)
 	return err
 }
 
 func (s *SQLiteStorage) GetAllQuestions() ([]*models.Question, error) {
-	rows, err := s.db.Query("SELECT id, user_id, username, text, answered, answer FROM questions")
+	rows, err := s.db.Query(`
+SELECT id, user_id, username, text, file_id, media_type, answered, answer
+FROM questions
+`)
 	if err != nil {
 		return nil, err
 	}
@@ -117,28 +150,43 @@ func (s *SQLiteStorage) GetAllQuestions() ([]*models.Question, error) {
 
 	var questions []*models.Question
 	for rows.Next() {
-		question := &models.Question{}
+		q := &models.Question{}
 		var answeredInt int
 		var answer sql.NullString
+		var fileID sql.NullString
+		var mediaType sql.NullString
 
-		if err := rows.Scan(&question.ID, &question.UserID, &question.Username, &question.Text, &answeredInt, &answer); err != nil {
+		if err := rows.Scan(
+			&q.ID,
+			&q.UserID,
+			&q.Username,
+			&q.Text,
+			&fileID,
+			&mediaType,
+			&answeredInt,
+			&answer,
+		); err != nil {
 			return nil, err
 		}
 
-		// Преобразуем 0/1 в bool
-		question.Answered = answeredInt != 0
-
-		// Обработка NULL для answer
-		if answer.Valid {
-			question.Answer = answer.String
-		} else {
-			question.Answer = ""
+		if fileID.Valid {
+			q.FileID = fileID.String
+		}
+		if mediaType.Valid {
+			q.MediaType = mediaType.String
 		}
 
-		questions = append(questions, question)
+		q.Answered = (answeredInt != 0)
+
+		if answer.Valid {
+			q.Answer = answer.String
+		} else {
+			q.Answer = ""
+		}
+
+		questions = append(questions, q)
 	}
 
-	// Проверяем ошибки, возникшие во время итерации
 	if err = rows.Err(); err != nil {
 		return nil, err
 	}

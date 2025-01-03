@@ -1,11 +1,11 @@
+// internal/bot/bot.go
 package bot
 
 import (
+	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api"
 	"telegram-anonymous-bot/internal/config"
 	"telegram-anonymous-bot/internal/storage"
 	"telegram-anonymous-bot/pkg/logger"
-
-	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api"
 )
 
 type TelegramBot struct {
@@ -14,7 +14,8 @@ type TelegramBot struct {
 	storage storage.Storage
 }
 
-func NewTelegramBot(cfg *config.Config, storage storage.Storage) (*TelegramBot, error) {
+// Конструктор
+func NewTelegramBot(cfg *config.Config, store storage.Storage) (*TelegramBot, error) {
 	botAPI, err := tgbotapi.NewBotAPI(cfg.TelegramBotToken)
 	if err != nil {
 		return nil, err
@@ -26,10 +27,11 @@ func NewTelegramBot(cfg *config.Config, storage storage.Storage) (*TelegramBot, 
 	return &TelegramBot{
 		bot:     botAPI,
 		config:  cfg,
-		storage: storage,
+		storage: store,
 	}, nil
 }
 
+// Запуск
 func (t *TelegramBot) Start() {
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = 60
@@ -40,15 +42,14 @@ func (t *TelegramBot) Start() {
 	}
 
 	for update := range updates {
-		if update.Message == nil { // игнорируем обновления, не содержащие сообщений
+		if update.Message == nil {
 			continue
 		}
 
 		if update.Message.IsCommand() {
 			t.handleCommand(update.Message)
-			continue
+		} else {
+			t.handleMessage(update.Message)
 		}
-
-		t.handleMessage(update.Message)
 	}
 }
