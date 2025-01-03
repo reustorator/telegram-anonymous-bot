@@ -1,7 +1,9 @@
 package main
 
 import (
+	_ "database/sql"
 	"log"
+	_ "modernc.org/sqlite"
 	"telegram-anonymous-bot/internal/bot"
 	"telegram-anonymous-bot/internal/config"
 	"telegram-anonymous-bot/internal/storage"

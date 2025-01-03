@@ -3,7 +3,7 @@ package storage
 import (
 	"database/sql"
 	"fmt"
-	"log"
+	_ "log"
 
 	_ "github.com/mattn/go-sqlite3"
 	"telegram-anonymous-bot/internal/models"
