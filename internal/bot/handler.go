@@ -78,6 +78,8 @@ func (t *TelegramBot) handleCommand(message *tgbotapi.Message) {
 		t.handleListCommand(message)
 	case "media":
 		t.handleMediaCommand(message)
+	case "askcohere":
+		t.handleAskCohereCommand(message)
 	default:
 		_ = t.sendMessage(message.Chat.ID, "Неизвестная команда.")
 	}
@@ -238,4 +240,23 @@ func (t *TelegramBot) sendErrorToUser(chatID int64, text string) {
 	if err := t.sendMessage(chatID, text); err != nil {
 		logger.ErrorLogger.Printf("Failed to send error message: %v", err)
 	}
+}
+
+func (t *TelegramBot) handleAskCohereCommand(message *tgbotapi.Message) {
+	userInput := strings.TrimSpace(strings.TrimPrefix(message.Text, "/askcohere"))
+
+	if userInput == "" {
+		t.sendMessage(message.Chat.ID, "Введите вопрос после команды /askcohere.")
+		return
+	}
+
+	// Запрос к Cohere API через прокси
+	response, err := t.queryCohereWithProxy(userInput)
+	if err != nil {
+		t.sendMessage(message.Chat.ID, "Ошибка при обращении к Cohere API: "+err.Error())
+		return
+	}
+
+	// Отправляем ответ пользователю
+	t.sendMessage(message.Chat.ID, response)
 }

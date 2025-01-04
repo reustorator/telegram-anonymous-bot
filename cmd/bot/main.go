@@ -2,8 +2,8 @@
 package main
 
 import (
+	"github.com/joho/godotenv"
 	"log"
-
 	"telegram-anonymous-bot/internal/bot"
 	"telegram-anonymous-bot/internal/config"
 	"telegram-anonymous-bot/internal/storage"
@@ -12,6 +12,7 @@ import (
 
 func main() {
 	logger.Init()
+	LoadEnv()
 
 	// Загрузка конфигурации (токен, admin_id, database_url из .env)
 	cfg, err := config.LoadConfig()
@@ -33,4 +34,10 @@ func main() {
 
 	// Запуск бота
 	telegramBot.Start()
+}
+
+func LoadEnv() {
+	if err := godotenv.Load(); err != nil {
+		log.Println("Ошибка загрузки .env файла:", err)
+	}
 }
