@@ -11,7 +11,6 @@ import (
 )
 
 func main() {
-	// Инициализация логгера
 	logger.Init()
 
 	// Загрузка конфигурации (токен, admin_id, database_url из .env)
