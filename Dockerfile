@@ -32,9 +32,9 @@ COPY --from=builder /app/questions.db .
 COPY --from=builder /app/config.env .
 
 # Устанавливаем переменные окружения (можно настроить через docker-compose)
-ENV TELEGRAM_BOT_TOKEN=7996743445:AAF83G86x-J1CSJPq6uha-d_Q1xp1Y-sXnc
-ENV ADMIN_ID=1093914606
-ENV DATABASE_URL=./questions.db
+ENV TELEGRAM_BOT_TOKEN=
+ENV ADMIN_ID=
+ENV DATABASE_URL=
 
 # Запускаем приложение
 CMD ["./telegram-anonymous-bot"]
