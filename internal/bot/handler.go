@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"strings"
 
-	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api"
+	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"telegram-anonymous-bot/internal/models"
 	"telegram-anonymous-bot/pkg/logger"
 )
@@ -14,15 +14,15 @@ import (
 // handleMessage — обрабатывает текстовые/медийные сообщения
 func (t *TelegramBot) handleMessage(m *tgbotapi.Message) {
 	q := &models.Question{
-		UserID:   m.From.ID,
+		UserID:   int(m.From.ID), // Приводим int64 к int
 		Username: m.From.UserName,
 		Text:     m.Text,
 	}
 
 	// Если это фото
-	if m.Photo != nil && len(*m.Photo) > 0 {
-		lastIndex := len(*m.Photo) - 1
-		q.FileID = (*m.Photo)[lastIndex].FileID
+	if len(m.Photo) > 0 { // Photo — это []tgbotapi.PhotoSize
+		lastIndex := len(m.Photo) - 1
+		q.FileID = m.Photo[lastIndex].FileID
 		q.MediaType = "photo"
 
 		if m.Caption != "" {
@@ -83,6 +83,41 @@ func (t *TelegramBot) handleCommand(message *tgbotapi.Message) {
 	}
 }
 
+func (t *TelegramBot) handleListCommand(message *tgbotapi.Message) {
+	// Проверяем, является ли отправитель администратором
+	if int(message.From.ID) != t.config.AdminID {
+		t.sendErrorToUser(message.Chat.ID, "У вас нет доступа к этой команде.")
+		return
+	}
+
+	// Получаем список всех вопросов из хранилища
+	questions, err := t.storage.GetAllQuestions()
+	if err != nil {
+		t.sendErrorToUser(message.Chat.ID, "Ошибка при получении списка вопросов: "+err.Error())
+		return
+	}
+
+	// Если вопросов нет, уведомляем администратора
+	if len(questions) == 0 {
+		t.sendMessage(message.Chat.ID, "Вопросы отсутствуют.")
+		return
+	}
+
+	// Формируем список вопросов
+	var builder strings.Builder
+	for _, q := range questions {
+		builder.WriteString(fmt.Sprintf(
+			"ID: %d, Пользователь: %s, Ответ: %s, Ответил: %t\n",
+			q.ID, q.Username, q.Answer, q.Answered,
+		))
+	}
+
+	// Отправляем список вопросов администратору
+	if err := t.sendMessage(message.Chat.ID, "Список вопросов:\n"+builder.String()); err != nil {
+		logger.ErrorLogger.Println("Error sending question list:", err)
+	}
+}
+
 // handleStartCommand — команда /start
 func (t *TelegramBot) handleStartCommand(message *tgbotapi.Message) {
 	welcomeMsg := "Привет! Задайте свой вопрос, и он будет отправлен анонимно."
@@ -93,7 +128,7 @@ func (t *TelegramBot) handleStartCommand(message *tgbotapi.Message) {
 
 // handleAnswerCommand — команда /answer <id> <ответ>
 func (t *TelegramBot) handleAnswerCommand(message *tgbotapi.Message) {
-	if message.From.ID != t.config.AdminID {
+	if int(message.From.ID) != t.config.AdminID {
 		t.sendErrorToUser(message.Chat.ID, "У вас нет доступа к этой команде.")
 		return
 	}
@@ -137,39 +172,9 @@ func (t *TelegramBot) handleAnswerCommand(message *tgbotapi.Message) {
 	_ = t.sendMessage(message.Chat.ID, "Ответ отправлен.")
 }
 
-// handleListCommand — команда /list
-func (t *TelegramBot) handleListCommand(message *tgbotapi.Message) {
-	if message.From.ID != t.config.AdminID {
-		t.sendErrorToUser(message.Chat.ID, "У вас нет доступа к этой команде.")
-		return
-	}
-
-	questions, err := t.storage.GetAllQuestions()
-	if err != nil {
-		t.sendErrorToUser(message.Chat.ID, "Ошибка при получении списка вопросов: "+err.Error())
-		return
-	}
-	if len(questions) == 0 {
-		t.sendMessage(message.Chat.ID, "Вопросы отсутствуют.")
-		return
-	}
-
-	var builder strings.Builder
-	for _, q := range questions {
-		builder.WriteString(fmt.Sprintf(
-			"ID: %d, Пользователь: %s, Текст: %s, Ответ: %t\n",
-			q.ID, q.Username, q.Text, q.Answered,
-		))
-	}
-
-	if err := t.sendMessage(message.Chat.ID, "Список вопросов:\n"+builder.String()); err != nil {
-		logger.ErrorLogger.Println("Error sending question list:", err)
-	}
-}
-
 // handleMediaCommand — команда /media <id>
 func (t *TelegramBot) handleMediaCommand(message *tgbotapi.Message) {
-	if message.From.ID != t.config.AdminID {
+	if int(message.From.ID) != t.config.AdminID {
 		t.sendErrorToUser(message.Chat.ID, "У вас нет доступа к этой команде.")
 		return
 	}
@@ -199,18 +204,18 @@ func (t *TelegramBot) handleMediaCommand(message *tgbotapi.Message) {
 
 	switch q.MediaType {
 	case "photo":
-		photoCfg := tgbotapi.NewPhotoShare(message.Chat.ID, q.FileID)
-		photoCfg.Caption = fmt.Sprintf("Вопрос #%d: %s", q.ID, q.Text)
-		if _, err := t.bot.Send(photoCfg); err != nil {
+		photoMsg := tgbotapi.NewPhoto(message.Chat.ID, tgbotapi.FileID(q.FileID))
+		photoMsg.Caption = fmt.Sprintf("Вопрос #%d: %s", q.ID, q.Text)
+		if _, err := t.bot.Send(photoMsg); err != nil {
 			logger.ErrorLogger.Println("Ошибка при отправке фото:", err)
 			t.sendErrorToUser(message.Chat.ID, "Не удалось отправить фото.")
 			return
 		}
 
 	case "video":
-		videoCfg := tgbotapi.NewVideoShare(message.Chat.ID, q.FileID)
-		videoCfg.Caption = fmt.Sprintf("Вопрос #%d: %s", q.ID, q.Text)
-		if _, err := t.bot.Send(videoCfg); err != nil {
+		videoMsg := tgbotapi.NewVideo(message.Chat.ID, tgbotapi.FileID(q.FileID))
+		videoMsg.Caption = fmt.Sprintf("Вопрос #%d: %s", q.ID, q.Text)
+		if _, err := t.bot.Send(videoMsg); err != nil {
 			logger.ErrorLogger.Println("Ошибка при отправке видео:", err)
 			t.sendErrorToUser(message.Chat.ID, "Не удалось отправить видео.")
 			return
