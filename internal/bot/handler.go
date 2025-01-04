@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
-	_ "github.com/sashabaranov/go-openai"
 	"telegram-anonymous-bot/internal/models"
 	"telegram-anonymous-bot/pkg/logger"
 )
@@ -79,8 +78,8 @@ func (t *TelegramBot) handleCommand(message *tgbotapi.Message) {
 		t.handleListCommand(message)
 	case "media":
 		t.handleMediaCommand(message)
-	/*case "askgpt": todo Бесплатных умных нейросетей мало, поэтому пока что оставлю
-	t.handleAskGPTCommand(message)*/
+	case "askcohere":
+		t.handleAskCohereCommand(message)
 	default:
 		_ = t.sendMessage(message.Chat.ID, "Неизвестная команда.")
 	}
@@ -243,15 +242,18 @@ func (t *TelegramBot) sendErrorToUser(chatID int64, text string) {
 	}
 }
 
-// handleAskGPTCommand - нейронка
-func (t *TelegramBot) handleAskGPTCommand(message *tgbotapi.Message) {
-	userInput := strings.TrimPrefix(message.Text, "/askgpt ")
+func (t *TelegramBot) handleAskCohereCommand(message *tgbotapi.Message) {
+	userInput := strings.TrimSpace(strings.TrimPrefix(message.Text, "/askcohere"))
 
-	// Используем Hugging Face API
-	model := "EleutherAI/gpt-neo-2.7B" // Замените на нужную модель
-	response, err := t.queryHuggingFace(model, userInput)
+	if userInput == "" {
+		t.sendMessage(message.Chat.ID, "Введите вопрос после команды /askcohere.")
+		return
+	}
+
+	// Запрос к Cohere API через прокси
+	response, err := t.queryCohereWithProxy(userInput)
 	if err != nil {
-		t.sendMessage(message.Chat.ID, "Ошибка при обращении к Hugging Face API: "+err.Error())
+		t.sendMessage(message.Chat.ID, "Ошибка при обращении к Cohere API: "+err.Error())
 		return
 	}
 

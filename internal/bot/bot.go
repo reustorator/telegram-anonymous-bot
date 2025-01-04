@@ -5,30 +5,33 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"io/ioutil"
 	"log"
 	"net/http"
+	"net/url"
+
+	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"telegram-anonymous-bot/internal/config"
 	"telegram-anonymous-bot/internal/storage"
 	"telegram-anonymous-bot/pkg/logger"
 )
 
+// TelegramBot содержит основные объекты для работы бота.
 type TelegramBot struct {
 	bot     *tgbotapi.BotAPI
 	config  *config.Config
 	storage storage.Storage
 }
 
-// Конструктор
+// NewTelegramBot создаёт нового бота с заданной конфигурацией и хранилищем.
 func NewTelegramBot(cfg *config.Config, store storage.Storage) (*TelegramBot, error) {
 	botAPI, err := tgbotapi.NewBotAPI(cfg.TelegramBotToken)
 	if err != nil {
 		return nil, err
 	}
 
-	botAPI.Debug = true
-	logger.InfoLogger.Printf("Авторизован аккаунт %s", botAPI.Self.UserName)
+	botAPI.Debug = false
+	logger.InfoLogger.Printf("Авторизован бот: %s", botAPI.Self.UserName)
 
 	return &TelegramBot{
 		bot:     botAPI,
@@ -37,126 +40,156 @@ func NewTelegramBot(cfg *config.Config, store storage.Storage) (*TelegramBot, er
 	}, nil
 }
 
+// setBotCommands устанавливает для бота основные команды.
 func (t *TelegramBot) setBotCommands() {
 	commands := []tgbotapi.BotCommand{
 		{Command: "start", Description: "Начало работы с ботом"},
-		{Command: "help", Description: "Получить справочную информацию"},
-		{Command: "list", Description: "Показать список всех вопросов"},
-		{Command: "media", Description: "Показать медиафайл по ID"},
-		/*		{Command: "askgpt", Description: "Спросить ChatGPT"},
-				todo Бесплатных умных нейросетей мало, поэтому пока что оставлю
-		*/
+		{Command: "list", Description: "Список вопросов"},
+		{Command: "help", Description: "Получить помощь"},
+		{Command: "askcohere", Description: "Задать вопрос через Cohere AI"},
 	}
 
-	cfg := tgbotapi.NewSetMyCommands(commands...)
-	_, err := t.bot.Request(cfg)
-	if err != nil {
-		log.Printf("Ошибка при установке команд бота: %v\n", err)
+	cmdCfg := tgbotapi.NewSetMyCommands(commands...)
+	if _, err := t.bot.Request(cmdCfg); err != nil {
+		logger.ErrorLogger.Printf("Ошибка установки команд: %v", err)
 	} else {
-		log.Println("Команды бота успешно установлены.")
+		logger.InfoLogger.Println("Команды успешно установлены.")
 	}
 }
 
-// Запуск
+// Start запускает бесконечный цикл чтения обновлений и их обработки.
 func (t *TelegramBot) Start() {
-	// Устанавливаем команды
-	t.setBotCommands() // Здесь просто вызываем метод
+	t.setBotCommands()
 
-	// Далее логика запуска обновлений
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = 60
 
 	updates := t.bot.GetUpdatesChan(u)
-
 	for update := range updates {
-		if update.Message != nil {
+		switch {
+		case update.Message != nil:
 			if update.Message.IsCommand() {
 				t.handleCommand(update.Message)
 			} else {
 				t.handleMessage(update.Message)
 			}
-		} else if update.CallbackQuery != nil {
+		case update.CallbackQuery != nil:
 			t.handleCallbackQuery(update.CallbackQuery)
 		}
 	}
 }
 
+// sendInlineMenu отправляет меню с кнопками (InlineKeyboard).
 func (t *TelegramBot) sendInlineMenu(chatID int64) {
-	button1 := tgbotapi.NewInlineKeyboardButtonData("Список вопросов", "list")
-	button2 := tgbotapi.NewInlineKeyboardButtonData("Помощь", "help")
-
-	inlineKb := tgbotapi.NewInlineKeyboardMarkup(tgbotapi.NewInlineKeyboardRow(button1, button2))
+	menu := tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("Список вопросов", "list"),
+			tgbotapi.NewInlineKeyboardButtonData("Помощь", "help"),
+		),
+	)
 
 	msg := tgbotapi.NewMessage(chatID, "Что вы хотите сделать?")
-	msg.ReplyMarkup = inlineKb
-
-	t.bot.Send(msg)
+	msg.ReplyMarkup = menu
+	_, _ = t.bot.Send(msg)
 }
 
-func (t *TelegramBot) handleHelpCommand(message *tgbotapi.Message) {
-	t.sendInlineMenu(message.Chat.ID)
-}
-
-func (t *TelegramBot) handleCallbackQuery(callback *tgbotapi.CallbackQuery) {
-	switch callback.Data {
+// handleCallbackQuery обрабатывает нажатие инлайн-кнопок.
+func (t *TelegramBot) handleCallbackQuery(cb *tgbotapi.CallbackQuery) {
+	switch cb.Data {
 	case "list":
-		t.sendMessage(callback.Message.Chat.ID, "Вы запросили список вопросов.")
+		t.sendMessage(cb.Message.Chat.ID, "Вы запросили список вопросов.")
 	case "help":
-		t.sendMessage(callback.Message.Chat.ID, "Справочная информация.")
+		t.sendMessage(cb.Message.Chat.ID, "Справочная информация.")
 	default:
-		t.sendMessage(callback.Message.Chat.ID, "Неизвестная команда.")
+		t.sendMessage(cb.Message.Chat.ID, "Неизвестная команда.")
 	}
 }
 
-type HuggingFaceRequest struct {
-	Inputs string `json:"inputs"`
+type CohereRequest struct {
+	Model       string  `json:"model"`
+	Prompt      string  `json:"prompt"`
+	MaxTokens   int     `json:"max_tokens"`
+	Temperature float64 `json:"temperature"`
 }
 
-type HuggingFaceResponse struct {
-	GeneratedText string `json:"generated_text"`
+type CohereResponse struct {
+	ID   string `json:"id"`
+	Text string `json:"text"` // Основной текстовый ответ
+	Meta struct {
+		APIVersion struct {
+			Version      string `json:"version"`
+			IsDeprecated bool   `json:"is_deprecated"`
+		} `json:"api_version"`
+		Warnings    []string `json:"warnings"`
+		BilledUnits struct {
+			InputTokens  int `json:"input_tokens"`
+			OutputTokens int `json:"output_tokens"`
+		} `json:"billed_units"`
+	} `json:"meta"`
+	FinishReason string `json:"finish_reason"`
 }
 
-func (t *TelegramBot) queryHuggingFace(model, userInput string) (string, error) {
-	apiURL := fmt.Sprintf("https://api-inference.huggingface.co/models/%s", model) //выносить потом всё в конфиг
-	apiKey := t.config.HuggingFaceKey                                              // Убедитесь, что ключ загружен из .env
+// queryCohereWithProxy выполняет запрос к Cohere API через (возможно) настроенный прокси.
+func (t *TelegramBot) queryCohereWithProxy(prompt string) (string, error) {
+	const apiURL = "https://api.cohere.ai/generate"
 
-	// Формируем запрос
-	payload := HuggingFaceRequest{Inputs: userInput}
-	body, err := json.Marshal(payload)
+	payload := CohereRequest{
+		Model:       "command-xlarge-nightly",
+		Prompt:      prompt,
+		MaxTokens:   512,
+		Temperature: 0.7,
+	}
+	data, err := json.Marshal(payload)
 	if err != nil {
-		return "", fmt.Errorf("ошибка при создании запроса: %v", err)
+		return "", fmt.Errorf("ошибка формирования JSON: %w", err)
 	}
 
-	// Отправляем запрос
-	req, err := http.NewRequest("POST", apiURL, bytes.NewBuffer(body))
+	client := getHttpClientWithProxy(t.config.ProxyURL)
+
+	req, err := http.NewRequest(http.MethodPost, apiURL, bytes.NewBuffer(data))
 	if err != nil {
-		return "", fmt.Errorf("ошибка при создании HTTP-запроса: %v", err)
+		return "", fmt.Errorf("ошибка создания HTTP-запроса: %w", err)
 	}
-	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("Authorization", "Bearer "+t.config.CohereKey)
 	req.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{}
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("ошибка при отправке запроса: %v", err)
+		return "", fmt.Errorf("ошибка отправки запроса к Cohere API: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := ioutil.ReadAll(resp.Body)
-		return "", fmt.Errorf("ошибка API: %s", body)
+		return "", fmt.Errorf("ошибка API Cohere: %s", string(body))
 	}
 
-	// Читаем ответ
-	var responses []HuggingFaceResponse
-	if err := json.NewDecoder(resp.Body).Decode(&responses); err != nil {
-		return "", fmt.Errorf("ошибка при обработке ответа: %v", err)
+	var cohereResp CohereResponse
+	if err := json.NewDecoder(resp.Body).Decode(&cohereResp); err != nil {
+		return "", fmt.Errorf("ошибка обработки JSON-ответа: %w", err)
 	}
 
-	// Проверяем наличие текста
-	if len(responses) == 0 || responses[0].GeneratedText == "" {
-		return "", fmt.Errorf("пустой ответ от модели")
+	if cohereResp.Text == "" {
+		return "", fmt.Errorf("пустой ответ от Cohere API")
+	}
+	return cohereResp.Text, nil
+}
+
+// getHttpClientWithProxy возвращает кастомный *http.Client, учитывая прокси.
+func getHttpClientWithProxy(proxyURL string) *http.Client {
+	if proxyURL == "" {
+		log.Println("Прокси не указан, используем стандартный клиент")
+		return http.DefaultClient
 	}
 
-	return responses[0].GeneratedText, nil
+	parsedURL, err := url.Parse(proxyURL)
+	if err != nil {
+		log.Fatalf("Некорректный адрес прокси: %v", err)
+	}
+
+	return &http.Client{
+		Transport: &http.Transport{
+			Proxy: http.ProxyURL(parsedURL),
+		},
+	}
 }
