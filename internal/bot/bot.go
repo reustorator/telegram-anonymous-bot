@@ -2,8 +2,13 @@
 package bot
 
 import (
+	"bytes"
+	"encoding/json"
+	"fmt"
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	"io/ioutil"
 	"log"
+	"net/http"
 	"telegram-anonymous-bot/internal/config"
 	"telegram-anonymous-bot/internal/storage"
 	"telegram-anonymous-bot/pkg/logger"
@@ -23,7 +28,7 @@ func NewTelegramBot(cfg *config.Config, store storage.Storage) (*TelegramBot, er
 	}
 
 	botAPI.Debug = true
-	logger.InfoLogger.Printf("Authorized on account %s", botAPI.Self.UserName)
+	logger.InfoLogger.Printf("Авторизован аккаунт %s", botAPI.Self.UserName)
 
 	return &TelegramBot{
 		bot:     botAPI,
@@ -38,6 +43,9 @@ func (t *TelegramBot) setBotCommands() {
 		{Command: "help", Description: "Получить справочную информацию"},
 		{Command: "list", Description: "Показать список всех вопросов"},
 		{Command: "media", Description: "Показать медиафайл по ID"},
+		/*		{Command: "askgpt", Description: "Спросить ChatGPT"},
+				todo Бесплатных умных нейросетей мало, поэтому пока что оставлю
+		*/
 	}
 
 	cfg := tgbotapi.NewSetMyCommands(commands...)
@@ -98,4 +106,57 @@ func (t *TelegramBot) handleCallbackQuery(callback *tgbotapi.CallbackQuery) {
 	default:
 		t.sendMessage(callback.Message.Chat.ID, "Неизвестная команда.")
 	}
+}
+
+type HuggingFaceRequest struct {
+	Inputs string `json:"inputs"`
+}
+
+type HuggingFaceResponse struct {
+	GeneratedText string `json:"generated_text"`
+}
+
+func (t *TelegramBot) queryHuggingFace(model, userInput string) (string, error) {
+	apiURL := fmt.Sprintf("https://api-inference.huggingface.co/models/%s", model) //выносить потом всё в конфиг
+	apiKey := t.config.HuggingFaceKey                                              // Убедитесь, что ключ загружен из .env
+
+	// Формируем запрос
+	payload := HuggingFaceRequest{Inputs: userInput}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return "", fmt.Errorf("ошибка при создании запроса: %v", err)
+	}
+
+	// Отправляем запрос
+	req, err := http.NewRequest("POST", apiURL, bytes.NewBuffer(body))
+	if err != nil {
+		return "", fmt.Errorf("ошибка при создании HTTP-запроса: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("ошибка при отправке запроса: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := ioutil.ReadAll(resp.Body)
+		return "", fmt.Errorf("ошибка API: %s", body)
+	}
+
+	// Читаем ответ
+	var responses []HuggingFaceResponse
+	if err := json.NewDecoder(resp.Body).Decode(&responses); err != nil {
+		return "", fmt.Errorf("ошибка при обработке ответа: %v", err)
+	}
+
+	// Проверяем наличие текста
+	if len(responses) == 0 || responses[0].GeneratedText == "" {
+		return "", fmt.Errorf("пустой ответ от модели")
+	}
+
+	return responses[0].GeneratedText, nil
 }

@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	_ "github.com/sashabaranov/go-openai"
 	"telegram-anonymous-bot/internal/models"
 	"telegram-anonymous-bot/pkg/logger"
 )
@@ -78,6 +79,8 @@ func (t *TelegramBot) handleCommand(message *tgbotapi.Message) {
 		t.handleListCommand(message)
 	case "media":
 		t.handleMediaCommand(message)
+	/*case "askgpt": todo Бесплатных умных нейросетей мало, поэтому пока что оставлю
+	t.handleAskGPTCommand(message)*/
 	default:
 		_ = t.sendMessage(message.Chat.ID, "Неизвестная команда.")
 	}
@@ -238,4 +241,20 @@ func (t *TelegramBot) sendErrorToUser(chatID int64, text string) {
 	if err := t.sendMessage(chatID, text); err != nil {
 		logger.ErrorLogger.Printf("Failed to send error message: %v", err)
 	}
+}
+
+// handleAskGPTCommand - нейронка
+func (t *TelegramBot) handleAskGPTCommand(message *tgbotapi.Message) {
+	userInput := strings.TrimPrefix(message.Text, "/askgpt ")
+
+	// Используем Hugging Face API
+	model := "EleutherAI/gpt-neo-2.7B" // Замените на нужную модель
+	response, err := t.queryHuggingFace(model, userInput)
+	if err != nil {
+		t.sendMessage(message.Chat.ID, "Ошибка при обращении к Hugging Face API: "+err.Error())
+		return
+	}
+
+	// Отправляем ответ пользователю
+	t.sendMessage(message.Chat.ID, response)
 }
